@@ -71,13 +71,12 @@ def main():
         logger.info("Loading compound server (32 tools)...")
         from src.server import mcp as resolve_mcp
 
-    # Use streamable-http app directly (no Starlette wrapper)
-    mount = args.mount_path
-    app = resolve_mcp.streamable_http_app(mount_path=mount)
+    # Use streamable-http app directly
+    app = resolve_mcp.streamable_http_app()
 
-    logger.info(f"Starting DaVinci Resolve MCP server on http://{args.host}:{args.port}{mount}")
+    logger.info(f"Starting DaVinci Resolve MCP server on http://{args.host}:{args.port}/mcp")
     logger.info("OpenClaw config:")
-    logger.info(f'  "url": "http://{args.host}:{args.port}{mount}",')
+    logger.info(f'  "url": "http://{args.host}:{args.port}/mcp",')
     logger.info(f'  "transport": "streamable-http"')
     logger.warning("SECURITY: No built-in authentication. Run only on a trusted LAN network.")
 
