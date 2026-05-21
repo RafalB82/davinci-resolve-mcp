@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-DaVinci Resolve MCP Server — SSE transport wrapper.
+DaVinci Resolve MCP Server — Streamable HTTP transport wrapper.
 
-Allows the MCP server to run over HTTP/SSE instead of stdio,
+Allows the MCP server to run over HTTP instead of stdio,
 enabling remote AI assistants (e.g. OpenClaw on another machine
 in the same LAN) to control DaVinci Resolve.
 
 Usage:
     python src/sse_server.py                    # compound server (default)
     python src/sse_server.py --full             # granular 329-tool server
-    python src/sse_server.py --host 0.0.0.0     # bind all interfaces
-    python src/sse_server.py --port 8765        # custom port
+    python src/sse_server.py --host 0.0.0.0
+    python src/sse_server.py --port 8765
 
 Requires:
     pip install uvicorn
@@ -22,6 +22,11 @@ import os
 import sys
 
 import uvicorn
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(current_dir)
@@ -37,9 +42,22 @@ logging.basicConfig(
 logger = logging.getLogger("davinci-resolve-mcp.sse")
 
 
+class BypassHostCheckMiddleware(BaseHTTPMiddleware):
+    """Override the strict Host check so LAN clients can connect."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Patch the Host header to satisfy MCP's transport_security
+        request.headers.__dict__["_list"].append(
+            (b"host", b"localhost:8765")
+        )
+        # Also patch scope
+        request.scope["headers"].append((b"host", b"localhost:8765"))
+        return await call_next(request)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="DaVinci Resolve MCP Server (SSE transport)"
+        description="DaVinci Resolve MCP Server (HTTP transport)"
     )
     parser.add_argument(
         "--full",
@@ -58,9 +76,10 @@ def main():
         help="Port to listen on (default: 8765)",
     )
     parser.add_argument(
-        "--mount-path",
-        default=None,
-        help="Mount path for SSE endpoint (default: '/')",
+        "--mode",
+        choices=["sse", "streamable-http"],
+        default="streamable-http",
+        help="Transport mode: sse or streamable-http (default: streamable-http)",
     )
     args = parser.parse_args()
 
@@ -71,23 +90,44 @@ def main():
         logger.info("Loading compound server (32 tools)...")
         from src.server import mcp as resolve_mcp
 
-    app = resolve_mcp.sse_app(mount_path=args.mount_path)
+    if args.mode == "streamable-http":
+        app = resolve_mcp.streamable_http_app()
+        endpoint_path = "/"
+        logger.info("Using streamable-http mode (POST /)")
+    else:
+        app = resolve_mcp.sse_app(mount_path=args.mount_path)
+        endpoint_path = args.mount_path or "/sse"
+        logger.info("Using SSE mode (GET /sse, POST /messages)")
+
+    # Wrap with middleware to bypass Host header check for LAN access
+    app = Starlette(
+        routes=app.routes,
+        middleware=[Middleware(BypassHostCheckMiddleware)],
+        on_startup=app.router.on_startup if hasattr(app.router, "on_startup") else [],
+        on_shutdown=app.router.on_shutdown if hasattr(app.router, "on_shutdown") else [],
+    )
 
     logger.info(
-        "Starting DaVinci Resolve MCP SSE server on "
-        f"http://{args.host}:{args.port}{args.mount_path or '/sse'}"
+        "Starting DaVinci Resolve MCP server on "
+        f"http://{args.host}:{args.port}{endpoint_path}"
     )
     logger.info(
-        "Connect your MCP client using:\n"
-        f"  url: http://{args.host}:{args.port}{args.mount_path or ''}\n"
-        "  transport: sse"
+        "OpenClaw config:\n"
+        f'  "url": "http://{args.host}:{args.port}/",\n'
+        f'  "transport": "{args.mode}"'
     )
     logger.warning(
-        "SECURITY: The SSE server has no built-in authentication. "
+        "SECURITY: No built-in authentication. "
         "Run only on a trusted LAN network."
     )
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info", forwarded_allow_ips="*")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":
