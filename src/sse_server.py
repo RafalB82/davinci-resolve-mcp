@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DaVinci Resolve MCP Server — Streamable HTTP transport wrapper.
+DaVinci Resolve MCP Server — HTTP transport wrapper (streamable-http).
 
 Allows the MCP server to run over HTTP instead of stdio,
 enabling remote AI assistants (e.g. OpenClaw on another machine
@@ -22,11 +22,6 @@ import os
 import sys
 
 import uvicorn
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
-from starlette.responses import JSONResponse
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_dir = os.path.dirname(current_dir)
@@ -40,19 +35,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("davinci-resolve-mcp.sse")
-
-
-class BypassHostCheckMiddleware(BaseHTTPMiddleware):
-    """Override the strict Host check so LAN clients can connect."""
-
-    async def dispatch(self, request: Request, call_next):
-        # Patch the Host header to satisfy MCP's transport_security
-        request.headers.__dict__["_list"].append(
-            (b"host", b"localhost:8765")
-        )
-        # Also patch scope
-        request.scope["headers"].append((b"host", b"localhost:8765"))
-        return await call_next(request)
 
 
 def main():
@@ -76,10 +58,9 @@ def main():
         help="Port to listen on (default: 8765)",
     )
     parser.add_argument(
-        "--mode",
-        choices=["sse", "streamable-http"],
-        default="streamable-http",
-        help="Transport mode: sse or streamable-http (default: streamable-http)",
+        "--mount-path",
+        default="/mcp",
+        help="Path to mount the transport on (default: /mcp)",
     )
     args = parser.parse_args()
 
@@ -90,55 +71,21 @@ def main():
         logger.info("Loading compound server (32 tools)...")
         from src.server import mcp as resolve_mcp
 
-    if args.mode == "streamable-http":
-        app = resolve_mcp.streamable_http_app()
-        endpoint_path = "/"
-        logger.info("Using streamable-http mode (POST /)")
-    else:
-        app = resolve_mcp.sse_app(mount_path=args.mount_path)
-        endpoint_path = args.mount_path or "/sse"
-        logger.info("Using SSE mode (GET /sse, POST /messages)")
+    # Use streamable-http app directly (no Starlette wrapper)
+    mount = args.mount_path
+    app = resolve_mcp.streamable_http_app(mount_path=mount)
 
-    # Wrap with middleware to bypass Host header check for LAN access
-    # Wrap with middleware to bypass Host header check for LAN access
-    # Build kwargs only Starlette version supports
-    starlette_kwargs = {
-        "routes": app.routes,
-        "middleware": [Middleware(BypassHostCheckMiddleware)],
-    }
-    # Some Starlette versions don't accept on_startup/on_shutdown
-    if hasattr(app.router, "on_startup") and app.router.on_startup:
-        try:
-            starlette_kwargs["on_startup"] = app.router.on_startup
-        except TypeError:
-            pass
-    if hasattr(app.router, "on_shutdown") and app.router.on_shutdown:
-        try:
-            starlette_kwargs["on_shutdown"] = app.router.on_shutdown
-        except TypeError:
-            pass
-    app = Starlette(**starlette_kwargs)
-
-    logger.info(
-        "Starting DaVinci Resolve MCP server on "
-        f"http://{args.host}:{args.port}{endpoint_path}"
-    )
-    logger.info(
-        "OpenClaw config:\n"
-        f'  "url": "http://{args.host}:{args.port}/",\n'
-        f'  "transport": "{args.mode}"'
-    )
-    logger.warning(
-        "SECURITY: No built-in authentication. "
-        "Run only on a trusted LAN network."
-    )
+    logger.info(f"Starting DaVinci Resolve MCP server on http://{args.host}:{args.port}{mount}")
+    logger.info("OpenClaw config:")
+    logger.info(f'  "url": "http://{args.host}:{args.port}{mount}",')
+    logger.info(f'  "transport": "streamable-http"')
+    logger.warning("SECURITY: No built-in authentication. Run only on a trusted LAN network.")
 
     uvicorn.run(
         app,
         host=args.host,
         port=args.port,
         log_level="info",
-        forwarded_allow_ips="*",
     )
 
 
