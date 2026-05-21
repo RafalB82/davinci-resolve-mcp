@@ -100,12 +100,24 @@ def main():
         logger.info("Using SSE mode (GET /sse, POST /messages)")
 
     # Wrap with middleware to bypass Host header check for LAN access
-    app = Starlette(
-        routes=app.routes,
-        middleware=[Middleware(BypassHostCheckMiddleware)],
-        on_startup=app.router.on_startup if hasattr(app.router, "on_startup") else [],
-        on_shutdown=app.router.on_shutdown if hasattr(app.router, "on_shutdown") else [],
-    )
+    # Wrap with middleware to bypass Host header check for LAN access
+    # Build kwargs only Starlette version supports
+    starlette_kwargs = {
+        "routes": app.routes,
+        "middleware": [Middleware(BypassHostCheckMiddleware)],
+    }
+    # Some Starlette versions don't accept on_startup/on_shutdown
+    if hasattr(app.router, "on_startup") and app.router.on_startup:
+        try:
+            starlette_kwargs["on_startup"] = app.router.on_startup
+        except TypeError:
+            pass
+    if hasattr(app.router, "on_shutdown") and app.router.on_shutdown:
+        try:
+            starlette_kwargs["on_shutdown"] = app.router.on_shutdown
+        except TypeError:
+            pass
+    app = Starlette(**starlette_kwargs)
 
     logger.info(
         "Starting DaVinci Resolve MCP server on "
