@@ -87,7 +87,7 @@ def main():
         "Run only on a trusted LAN network."
     )
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info", forwarded_allow_ips="*")
 
 
 if __name__ == "__main__":
